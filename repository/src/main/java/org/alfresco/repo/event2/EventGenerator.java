@@ -33,6 +33,8 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 
+import java.util.function.Consumer;
+import org.alfresco.model.ContentModel;
 import org.alfresco.repo.event.v1.model.RepoEvent;
 import org.alfresco.repo.event2.filter.ChildAssociationTypeFilter;
 import org.alfresco.repo.event2.filter.EventFilterRegistry;
@@ -52,6 +54,11 @@ import org.alfresco.repo.node.NodeServicePolicies.OnUpdatePropertiesPolicy;
 import org.alfresco.repo.policy.JavaBehaviour;
 import org.alfresco.repo.policy.PolicyComponent;
 import org.alfresco.repo.security.authentication.AuthenticationUtil;
+import org.alfresco.repo.security.permissions.PermissionServicePolicies;
+import org.alfresco.repo.security.permissions.PermissionServicePolicies.OnGrantLocalPermission;
+import org.alfresco.repo.security.permissions.PermissionServicePolicies.OnInheritPermissionsDisabled;
+import org.alfresco.repo.security.permissions.PermissionServicePolicies.OnInheritPermissionsEnabled;
+import org.alfresco.repo.security.permissions.PermissionServicePolicies.OnRevokeLocalPermission;
 import org.alfresco.repo.transaction.AlfrescoTransactionSupport;
 import org.alfresco.repo.transaction.RetryingTransactionHelper.RetryingTransactionCallback;
 import org.alfresco.service.cmr.dictionary.DictionaryService;
@@ -79,7 +86,11 @@ import org.springframework.extensions.surf.util.AbstractLifecycleBean;
  */
 public class EventGenerator extends AbstractLifecycleBean implements InitializingBean, EventSupportedPolicies,
                                                                      ChildAssociationEventSupportedPolicies,
-                                                                     PeerAssociationEventSupportedPolicies
+                                                                     PeerAssociationEventSupportedPolicies,
+                                                                     PermissionServicePolicies.OnGrantLocalPermission,
+                                                                     PermissionServicePolicies.OnRevokeLocalPermission,
+                                                                     PermissionServicePolicies.OnInheritPermissionsDisabled,
+                                                                     PermissionServicePolicies.OnInheritPermissionsEnabled
 {
     private static final Log LOGGER = LogFactory.getLog(EventGenerator.class);
 
@@ -142,6 +153,14 @@ public class EventGenerator extends AbstractLifecycleBean implements Initializin
                                            new JavaBehaviour(this, "onCreateAssociation"));
         policyComponent.bindAssociationBehaviour(BeforeDeleteAssociationPolicy.QNAME, this,
                                            new JavaBehaviour(this, "beforeDeleteAssociation"));
+        policyComponent.bindClassBehaviour(OnGrantLocalPermission.QNAME, this,
+                                                 new JavaBehaviour(this, "onGrantLocalPermission"));
+        policyComponent.bindClassBehaviour(OnRevokeLocalPermission.QNAME, this,
+                                           new JavaBehaviour(this, "onRevokeLocalPermission"));
+        policyComponent.bindClassBehaviour(OnInheritPermissionsEnabled.QNAME, this,
+                                           new JavaBehaviour(this, "onInheritPermissionsEnabled"));
+        policyComponent.bindClassBehaviour(OnInheritPermissionsDisabled.QNAME, this,
+                                           new JavaBehaviour(this, "onInheritPermissionsDisabled"));
     }
 
     public void setPolicyComponent(PolicyComponent policyComponent)
@@ -207,6 +226,7 @@ public class EventGenerator extends AbstractLifecycleBean implements Initializin
     public void onMoveNode(ChildAssociationRef oldChildAssocRef, ChildAssociationRef newChildAssocRef)
     {
         getEventConsolidator(newChildAssocRef.getChildRef()).onMoveNode(oldChildAssocRef, newChildAssocRef);
+        launchPermissionEvents(newChildAssocRef.getChildRef(), node -> this.getPermissionEventConsolidator(node).onChangePermission(node));
     }
 
     @Override
@@ -265,7 +285,8 @@ public class EventGenerator extends AbstractLifecycleBean implements Initializin
 
     protected EventConsolidator createEventConsolidator()
     {
-        return new EventConsolidator(nodeResourceHelper);
+        //in community we should return EventConsolidator, while in enterprise something like EnterpriseEventConsolidator
+        return new EnterpriseEventConsolidator(nodeResourceHelper);
     }
 
     protected ChildAssociationEventConsolidator createChildAssociationEventConsolidator(
@@ -301,6 +322,23 @@ public class EventGenerator extends AbstractLifecycleBean implements Initializin
         return eventConsolidator;
     }
 
+    private EnterpriseEventConsolidator getPermissionEventConsolidator(NodeRef nodeRef)
+    {
+        Consolidators consolidators = getTxnConsolidators(transactionListener);
+        Map<NodeRef, EnterpriseEventConsolidator> nodeEvents = consolidators.getPermissionChanges();
+        if (nodeEvents.isEmpty())
+        {
+            AlfrescoTransactionSupport.bindListener(transactionListener);
+        }
+
+        EnterpriseEventConsolidator eventConsolidator = nodeEvents.get(nodeRef);
+        if (eventConsolidator == null)
+        {
+            eventConsolidator = new EnterpriseEventConsolidator(nodeResourceHelper);
+            nodeEvents.put(nodeRef, eventConsolidator);
+        }
+        return eventConsolidator;
+    }
 
     private Consolidators getTxnConsolidators(Object resourceKey)
     {
@@ -388,6 +426,43 @@ public class EventGenerator extends AbstractLifecycleBean implements Initializin
         //NOOP
     }
 
+    @Override
+    public void onGrantLocalPermission(NodeRef nodeRef, String authority, String permission) {
+        getPermissionEventConsolidator(nodeRef).onChangePermission(nodeRef);
+        launchPermissionEvents(nodeRef, node -> this.onGrantLocalPermission(node, authority, permission));
+    }
+
+
+    @Override
+    public void onRevokeLocalPermission(NodeRef nodeRef, String authority, String permission) {
+      getPermissionEventConsolidator(nodeRef).onChangePermission(nodeRef);
+      launchPermissionEvents(nodeRef, node -> this.onRevokeLocalPermission(node, authority, permission));
+    }
+
+    @Override
+    public void onInheritPermissionsEnabled(NodeRef nodeRef) {
+      getPermissionEventConsolidator(nodeRef).onChangePermission(nodeRef);
+      launchPermissionEvents(nodeRef, node -> this.onInheritPermissionsEnabled(node));
+    }
+
+    @Override
+    public void onInheritPermissionsDisabled(NodeRef nodeRef, boolean async) {
+      getPermissionEventConsolidator(nodeRef).onChangePermission(nodeRef);
+      launchPermissionEvents(nodeRef, node -> this.onInheritPermissionsDisabled(node, async));
+    }
+
+
+  private void launchPermissionEvents(NodeRef nodeRef, Consumer<NodeRef> nodeRefConsumer) {
+    QName type = nodeService.getType(nodeRef);
+    if(dictionaryService.isSubClass(type, ContentModel.TYPE_FOLDER)){
+      nodeService.getChildAssocs(nodeRef)
+          .stream()
+          .map(ChildAssociationRef::getChildRef)
+          .filter(nodeResourceHelper.permissionService::getInheritParentPermissions)
+          .forEach(nodeRefConsumer);
+    }
+  }
+    
     private class EventTransactionListener extends TransactionListenerAdapter
     {
         @Override
@@ -399,6 +474,13 @@ public class EventGenerator extends AbstractLifecycleBean implements Initializin
 
                 // Node events
                 for (Map.Entry<NodeRef, EventConsolidator> entry : consolidators.getNodes().entrySet())
+                {
+                    EventConsolidator eventConsolidator = entry.getValue();
+                    sendEvent(entry.getKey(), eventConsolidator);
+                }
+
+                // Node permission updated events
+                for (Map.Entry<NodeRef, EnterpriseEventConsolidator> entry : consolidators.getPermissionChanges().entrySet())
                 {
                     EventConsolidator eventConsolidator = entry.getValue();
                     sendEvent(entry.getKey(), eventConsolidator);
@@ -547,6 +629,7 @@ public class EventGenerator extends AbstractLifecycleBean implements Initializin
         private Map<NodeRef, EventConsolidator> nodes;
         private Map<ChildAssociationRef, ChildAssociationEventConsolidator> childAssocs;
         private Map<AssociationRef, PeerAssociationEventConsolidator> peerAssocs;
+        private Map<NodeRef, EnterpriseEventConsolidator> permissionChanges;
 
         public Map<NodeRef, EventConsolidator> getNodes()
         {
@@ -555,6 +638,15 @@ public class EventGenerator extends AbstractLifecycleBean implements Initializin
                 nodes = new LinkedHashMap<>(29);
             }
             return nodes;
+        }
+
+        public Map<NodeRef, EnterpriseEventConsolidator> getPermissionChanges()
+        {
+            if (permissionChanges == null)
+            {
+                permissionChanges = new LinkedHashMap<>(29);
+            }
+            return permissionChanges;
         }
 
         public Map<ChildAssociationRef, ChildAssociationEventConsolidator> getChildAssocs()

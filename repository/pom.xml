@@ -1040,6 +1040,11 @@
             <version>${dependency.awaitility.version}</version>
             <scope>test</scope>
         </dependency>
+      <dependency>
+        <groupId>org.alfresco</groupId>
+        <artifactId>acs-enterprise-event-model</artifactId>
+        <version>0.0.2-SNAPSHOT</version>
+      </dependency>
     </dependencies>
 
     <profiles>

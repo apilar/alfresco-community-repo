@@ -52,6 +52,7 @@ import org.alfresco.service.cmr.repository.NodeRef;
 import org.alfresco.service.cmr.repository.NodeService;
 import org.alfresco.service.cmr.repository.Path;
 import org.alfresco.service.cmr.security.NoSuchPersonException;
+import org.alfresco.service.cmr.security.PermissionService;
 import org.alfresco.service.cmr.security.PersonService;
 import org.alfresco.service.namespace.NamespaceException;
 import org.alfresco.service.namespace.NamespaceService;
@@ -71,13 +72,14 @@ public class NodeResourceHelper implements InitializingBean
 {
     private static final Log LOGGER = LogFactory.getLog(NodeResourceHelper.class);
 
-    protected NodeService         nodeService;
-    protected DictionaryService   dictionaryService;
-    protected PersonService       personService;
+    protected PermissionService permissionService;
+    protected NodeService nodeService;
+    protected DictionaryService dictionaryService;
+    protected PersonService personService;
     protected EventFilterRegistry eventFilterRegistry;
-    protected NamespaceService    namespaceService;
+    protected NamespaceService namespaceService;
 
-    private NodeAspectFilter   nodeAspectFilter;
+    private NodeAspectFilter nodeAspectFilter;
     private NodePropertyFilter nodePropertyFilter;
 
     @Override
@@ -88,6 +90,7 @@ public class NodeResourceHelper implements InitializingBean
         PropertyCheck.mandatory(this, "personService", personService);
         PropertyCheck.mandatory(this, "eventFilterRegistry", eventFilterRegistry);
         PropertyCheck.mandatory(this, "namespaceService", namespaceService);
+        PropertyCheck.mandatory(this, "permissionService", permissionService);
 
         this.nodeAspectFilter = eventFilterRegistry.getNodeAspectFilter();
         this.nodePropertyFilter = eventFilterRegistry.getNodePropertyFilter();
@@ -106,6 +109,10 @@ public class NodeResourceHelper implements InitializingBean
     public void setPersonService(PersonService personService)
     {
         this.personService = personService;
+    }
+
+    public void setPermissionService(PermissionService permissionService) {
+        this.permissionService = permissionService;
     }
 
     // To make IntelliJ stop complaining about unused method!
@@ -131,18 +138,18 @@ public class NodeResourceHelper implements InitializingBean
         Map<String, UserInfo> mapUserCache = new HashMap<>(2);
 
         return NodeResource.builder().setId(nodeRef.getId())
-                           .setName((String) properties.get(ContentModel.PROP_NAME))
-                           .setNodeType(getQNamePrefixString(type))
-                           .setIsFile(isSubClass(type, ContentModel.TYPE_CONTENT))
-                           .setIsFolder(isSubClass(type, ContentModel.TYPE_FOLDER))
-                           .setCreatedByUser(getUserInfo((String) properties.get(ContentModel.PROP_CREATOR), mapUserCache))
-                           .setCreatedAt(getZonedDateTime((Date)properties.get(ContentModel.PROP_CREATED)))
-                           .setModifiedByUser(getUserInfo((String) properties.get(ContentModel.PROP_MODIFIER), mapUserCache))
-                           .setModifiedAt(getZonedDateTime((Date)properties.get(ContentModel.PROP_MODIFIED)))
-                           .setContent(getContentInfo(properties))
-                           .setPrimaryHierarchy(PathUtil.getNodeIdsInReverse(path, false))
-                           .setProperties(mapToNodeProperties(properties))
-                           .setAspectNames(getMappedAspects(nodeRef));
+                       .setName((String) properties.get(ContentModel.PROP_NAME))
+                       .setNodeType(getQNamePrefixString(type))
+                       .setIsFile(isSubClass(type, ContentModel.TYPE_CONTENT))
+                       .setIsFolder(isSubClass(type, ContentModel.TYPE_FOLDER))
+                       .setCreatedByUser(getUserInfo((String) properties.get(ContentModel.PROP_CREATOR), mapUserCache))
+                       .setCreatedAt(getZonedDateTime((Date) properties.get(ContentModel.PROP_CREATED)))
+                       .setModifiedByUser(getUserInfo((String) properties.get(ContentModel.PROP_MODIFIER), mapUserCache))
+                       .setModifiedAt(getZonedDateTime((Date) properties.get(ContentModel.PROP_MODIFIED)))
+                       .setContent(getContentInfo(properties))
+                       .setPrimaryHierarchy(PathUtil.getNodeIdsInReverse(path, false))
+                       .setProperties(mapToNodeProperties(properties))
+                       .setAspectNames(getMappedAspects(nodeRef));
     }
 
     private boolean isSubClass(QName className, QName ofClassQName)
@@ -171,15 +178,18 @@ public class NodeResourceHelper implements InitializingBean
         Map<String, Serializable> filteredProps = new HashMap<>(props.size());
 
         props.forEach((k, v) -> {
-            if (!nodePropertyFilter.isExcluded(k))
+            if (!nodePropertyFilter.isExcluded(k) && v != null)
             {
-                if (v != null && v instanceof MLText)
+                if (v instanceof MLText)
                 {
                     //TODO - should we send all of the values if multiple locales exist?
                     v = ((MLText) v).getDefaultValue();
                 }
 
-                filteredProps.put(getQNamePrefixString(k), v);
+                if (isNotEmptyString(v))
+                {
+                    filteredProps.put(getQNamePrefixString(k), v);
+                }
             }
         });
 
@@ -205,7 +215,7 @@ public class NodeResourceHelper implements InitializingBean
         {
             String sysUserName = AuthenticationUtil.getSystemUserName();
             if (userName.equals(sysUserName) || (AuthenticationUtil.isMtEnabled()
-                        && userName.startsWith(sysUserName + "@")))
+                                                 && userName.startsWith(sysUserName + "@")))
             {
                 userInfo = new UserInfo(userName, userName, "");
             }
@@ -255,8 +265,8 @@ public class NodeResourceHelper implements InitializingBean
      * Returns the QName in the format prefix:local, but in the exceptional case where there is no registered prefix
      * returns it in the form {uri}local.
      *
-     * @param   k QName
-     * @return  a String representing the QName in the format prefix:local or {uri}local.
+     * @param k QName
+     * @return a String representing the QName in the format prefix:local or {uri}local.
      */
     public String getQNamePrefixString(QName k)
     {
@@ -293,7 +303,7 @@ public class NodeResourceHelper implements InitializingBean
 
     public QName getNodeType(NodeRef nodeRef)
     {
-       return nodeService.getType(nodeRef);
+        return nodeService.getType(nodeRef);
     }
 
     public Serializable getProperty(NodeRef nodeRef, QName qName)
@@ -310,7 +320,7 @@ public class NodeResourceHelper implements InitializingBean
     {
         return mapToNodeAspects(nodeService.getAspects(nodeRef));
     }
-    
+
     public List<String> getPrimaryHierarchy(NodeRef nodeRef, boolean showLeaf)
     {
         final Path path = nodeService.getPath(nodeRef);

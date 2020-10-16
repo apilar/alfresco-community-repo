@@ -106,9 +106,9 @@ public class EventConsolidator implements EventSupportedPolicies
     protected DataAttributes<NodeResource> buildEventData(EventInfo eventInfo, NodeResource resource, EventType eventType)
     {
         EventData.Builder<NodeResource> eventDataBuilder = EventData.<NodeResource>builder()
-                    .setEventGroupId(eventInfo.getTxnId())
-                    .setResource(resource);
-
+            .setEventGroupId(eventInfo.getTxnId())
+            .setResource(resource);
+        
         if (eventType == EventType.NODE_UPDATED)
         {
             eventDataBuilder.setResourceBefore(buildNodeResourceBeforeDelta(resource));
@@ -140,7 +140,7 @@ public class EventConsolidator implements EventSupportedPolicies
      *
      * @param nodeRef the nodeRef in the txn
      */
-    private void createBuilderIfAbsent(NodeRef nodeRef)
+    protected void createBuilderIfAbsent(NodeRef nodeRef)
     {
         createBuilderIfAbsent(nodeRef, false);
     }
@@ -148,7 +148,7 @@ public class EventConsolidator implements EventSupportedPolicies
     @Override
     public void onCreateNode(ChildAssociationRef childAssocRef)
     {
-        eventTypes.add(EventType.NODE_CREATED);
+        addEventType(EventType.NODE_CREATED);
 
         NodeRef nodeRef = childAssocRef.getChildRef();
         createBuilderIfAbsent(nodeRef);
@@ -162,7 +162,7 @@ public class EventConsolidator implements EventSupportedPolicies
     @Override
     public void onMoveNode(ChildAssociationRef oldChildAssocRef, ChildAssociationRef newChildAssocRef)
     {
-        eventTypes.add(EventType.NODE_UPDATED);
+        addEventType(EventType.NODE_UPDATED);
 
         createBuilderIfAbsent(newChildAssocRef.getChildRef());
         setBeforePrimaryHierarchy(helper.getPrimaryHierarchy(oldChildAssocRef.getParentRef(), true));
@@ -171,7 +171,7 @@ public class EventConsolidator implements EventSupportedPolicies
     @Override
     public void onSetNodeType(NodeRef nodeRef, QName before, QName after)
     {
-        eventTypes.add(EventType.NODE_UPDATED);
+        addEventType(EventType.NODE_UPDATED);
         nodeTypeBefore = before;
         createBuilderIfAbsent(nodeRef);
     }
@@ -179,7 +179,7 @@ public class EventConsolidator implements EventSupportedPolicies
     @Override
     public void onUpdateProperties(NodeRef nodeRef, Map<QName, Serializable> before, Map<QName, Serializable> after)
     {
-        eventTypes.add(EventType.NODE_UPDATED);
+        addEventType(EventType.NODE_UPDATED);
 
         // Sometime we don't get the 'before', so just use the latest
         if (before.isEmpty() && this.propertiesAfter != null)
@@ -194,14 +194,18 @@ public class EventConsolidator implements EventSupportedPolicies
     @Override
     public void beforeDeleteNode(NodeRef nodeRef)
     {
-        eventTypes.add(EventType.NODE_DELETED);
+        addEventType(EventType.NODE_DELETED);
         createBuilderIfAbsent(nodeRef, false);
+    }
+
+    protected void addEventType(EventType nodeDeleted) {
+        eventTypes.add(nodeDeleted);
     }
 
     @Override
     public void onAddAspect(NodeRef nodeRef, QName aspectTypeQName)
     {
-        eventTypes.add(EventType.NODE_UPDATED);
+        addEventType(EventType.NODE_UPDATED);
         addAspect(aspectTypeQName);
         createBuilderIfAbsent(nodeRef);
     }
@@ -221,7 +225,7 @@ public class EventConsolidator implements EventSupportedPolicies
     @Override
     public void onRemoveAspect(NodeRef nodeRef, QName aspectTypeQName)
     {
-        eventTypes.add(EventType.NODE_UPDATED);
+        addEventType(EventType.NODE_UPDATED);
         removeAspect(aspectTypeQName);
         createBuilderIfAbsent(nodeRef);
     }
@@ -489,4 +493,9 @@ public class EventConsolidator implements EventSupportedPolicies
     {
         return resourceBeforeAllFieldsNull;
     }
+    
+    protected void setResourceBeforeAllFieldsNull(boolean resourceBeforeAllFieldsNull){
+        this.resourceBeforeAllFieldsNull = resourceBeforeAllFieldsNull;
+    }
+
 }
